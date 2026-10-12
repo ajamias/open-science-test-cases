@@ -1,14 +1,17 @@
 # VM Testing
 
-Three test suites for OpenShift Virtualization:
+Four test suites for OpenShift Virtualization:
 
 - **Networking** (`test-vm.sh`, `net-test-vm.yaml`) — a CirrOS VM on an ephemeral `containerDisk`, checking egress and inbound reachability.
 - **Persistent storage** (`test-vm-storage.sh`) — a Fedora VM on a CDI-provisioned PVC, checking that guest data survives a stop/start.
 - **Live migration** (`test-vm-migration.sh`) — the same VM moved between nodes while running, checking that the guest never reboots.
+- **Disk cloning** (`test-vm-clone.sh`) — no VM at all; asks the same StorageClass to clone a disk four different ways and reports which, if any, work.
+
+Each test deletes what it created on exit. `cleanup.sh` is there for when that did not happen — see [The cleanup script](#the-cleanup-script) at the end.
 
 ## Prerequisites
 
-All three require `oc` and `virtctl`, authenticated to the target cluster, with OpenShift Virtualization installed (see `component-checks/oc-virt-checks.sh`). `virtctl` is not bundled with `oc`; get its download URL with:
+The first three require `oc` and `virtctl`, authenticated to the target cluster, with OpenShift Virtualization installed (see `component-checks/oc-virt-checks.sh`). `test-vm-clone.sh` needs only `oc`, since it never boots a guest. `virtctl` is not bundled with `oc`; get its download URL with:
 
 ```bash
 oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged -o jsonpath='{.spec.links[*].href}'
@@ -154,10 +157,12 @@ Run against `mm-test` on `oac-dev-workload0`, Fedora Linux 41 Cloud Edition on a
 
 ## Known issue: cloning is broken on `pure-fb-nfsv4`
 
-`SOURCE_MODE=registry` is the default because `SOURCE_MODE=datasource` does not work on this cluster, and the failure is silent — the DataVolume never reports `Failed`, it retry-loops indefinitely. Both clone strategies fail:
+`SOURCE_MODE=registry` is the default because `SOURCE_MODE=datasource` does not work on this cluster, and the failure is silent — the DataVolume never reports `Failed`, it retry-loops indefinitely. The two strategies CDI will choose on its own both fail:
 
 - **`csi-clone`** — the PVC event reads `rpc error: code = Unimplemented desc = volume cloning is not supported for FlashBlade`. The StorageProfile nonetheless advertises `cloneStrategy: csi-clone`, so CDI keeps choosing a strategy the driver cannot serve.
 - **host-assisted `copy`** (forced with the `cdi.kubevirt.io/cloneType: copy` annotation) — gets further, standing up a source pod and an upload server, then the upload server dies untarring onto the target: `error unarchiving to /data: exit status 2`, and the clone restarts from the beginning.
+
+A third strategy, **`snapshot`**, does work — see [VM Disk Clone Testing](#vm-disk-clone-testing) below, which tests all three and confirms the snapshot path produces a correctly sized, bound RWX disk. The fix is to set `spec.cloneStrategy: snapshot` on `storageprofile/pure-fb-nfsv4` in the GitOps repo; it is currently unset, so `csi-clone` is just CDI's default for this provisioner.
 
 This affects more than this test. Cloning a golden image is the path the console's **Create VirtualMachine → from template** button takes, so provisioning a VM through the UI on the default StorageClass hangs with no error surfaced to the user. Worth raising with whoever owns the Pure/Portworx CSI configuration.
 
